@@ -364,7 +364,9 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
     public RemotingCommand invokeSync(String addr, final RemotingCommand request, long timeoutMillis)
         throws InterruptedException, RemotingConnectException, RemotingSendRequestException, RemotingTimeoutException {
         long beginStartTime = System.currentTimeMillis();
+        //这里获取连接，该方法里面会做连接的检查和恢复
         final Channel channel = this.getAndCreateChannel(addr);
+        //最后如果还是不是有效连接，则关闭连接，抛出异常
         if (channel != null && channel.isActive()) {
             try {
                 doBeforeRpcHooks(addr, request);
@@ -385,6 +387,7 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
                     log.warn("invokeSync: close socket because of timeout, {}ms, {}", timeoutMillis, addr);
                 }
                 log.warn("invokeSync: wait response timeout exception, the channel[{}]", addr);
+                // 超时异常如果关闭连接可能会产生连锁反应
                 throw e;
             }
         } else {
@@ -394,15 +397,16 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
     }
 
     private Channel getAndCreateChannel(final String addr) throws InterruptedException {
+        //无论是producer还是consumer，传进来的addr参数都是null
         if (null == addr) {
             return getAndCreateNameserverChannel();
         }
-
+        //因为客户端传入的addr是null，所以客户端不会走到这里来，只有broker才会走到这里来，因为broker传入的addr不为null
         ChannelWrapper cw = this.channelTables.get(addr);
         if (cw != null && cw.isOK()) {
             return cw.getChannel();
         }
-
+        //注意，如果和某个addr的连接不OK了，则再向该nameserver发起重连
         return this.createChannel(addr);
     }
 
@@ -410,6 +414,7 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
         String addr = this.namesrvAddrChoosed.get();
         if (addr != null) {
             ChannelWrapper cw = this.channelTables.get(addr);
+            //注意这里，虽然长连接已经建立了，但是每次调用时，仍然要通过“cw != null && cw.isOK()”检查连接是否OK。
             if (cw != null && cw.isOK()) {
                 return cw.getChannel();
             }
@@ -418,6 +423,7 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
         final List<String> addrList = this.namesrvAddrList.get();
         if (this.lockNamesrvChannel.tryLock(LOCK_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
             try {
+                //这里又执行了一边上面的获取连接并检测的代码，可以连接，因为有时候连接只是偶尔不OK的
                 addr = this.namesrvAddrChoosed.get();
                 if (addr != null) {
                     ChannelWrapper cw = this.channelTables.get(addr);
@@ -427,6 +433,8 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
                 }
 
                 if (addrList != null && !addrList.isEmpty()) {
+                    //namesrvIndex指示了当前跟哪个nameserver发生连接，初始值是个随机数，跟nameserver数量取模，走到这一步，要么是首次发起调用，
+                    // 之前连接还未创建现在要创建了，或者是已创建的连接无效了要连接下一个nameserver，就是“cw.isOK()”为false
                     for (int i = 0; i < addrList.size(); i++) {
                         int index = this.namesrvIndex.incrementAndGet();
                         index = Math.abs(index);
